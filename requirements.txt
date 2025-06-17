@@ -1,0 +1,8 @@
+torch>=2.0
+torchvision
+timm
+transformers
+tfrecord[torch]
+coca-pytorch
+numpy
+Pillow
