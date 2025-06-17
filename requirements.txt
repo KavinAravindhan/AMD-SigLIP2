@@ -6,3 +6,5 @@ tfrecord[torch]
 coca-pytorch
 numpy
 Pillow
+tensorflow>=2.12,<2.16
+scikit-learn
