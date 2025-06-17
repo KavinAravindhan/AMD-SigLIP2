@@ -1,3 +1,5 @@
+import io
+from tkinter import Image
 import torch, numpy as np
 from torch import nn
 from torch.utils.data import DataLoader
