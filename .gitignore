@@ -197,6 +197,7 @@ cython_debug/
 images_subset_rishabh/
 *.p
 *.tfrecord
+*.pt
 
 # .venv_amd is a virtual environment created for AMD-SigLIP2 project
 .venv_amd/

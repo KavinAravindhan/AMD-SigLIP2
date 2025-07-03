@@ -1,20 +1,20 @@
 import os
-import io
 import torch
 import numpy as np
-import torch.nn.functional as F
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, RandomSampler
 from torchvision.transforms import functional as TF
 from tfrecord.torch.dataset import TFRecordDataset
-from transformers import AutoImageProcessor, SiglipVisionModel
+from transformers import AutoProcessor, AutoModel, SiglipVisionModel
 from PIL import Image
+import io
+import torch.nn.functional as F
 from embedder import TextEmbedder
 
-# ───────────── Config ──────────────
 os.environ["TRANSFORMERS_NO_TF"] = "1"
 os.environ["TRANSFORMERS_NO_FLAX"] = "1"
 
+# ───────────── Config ──────────────
 TFRECORD_PATH = "dataset.tfrecord"
 BATCH_SIZE = 8
 EPOCHS = 10
@@ -43,21 +43,25 @@ def collate_fn(batch):
         img = TF.to_tensor(img)
         images.append(img)
         labels.append(item["label"])
-        # labels.append(int(item["label"]))
         transcripts.append(item["transcript"].decode())  # string
     return torch.stack(images), torch.tensor(labels), transcripts
 
 dataset = TFRecordDataset(TFRECORD_PATH, None, description)
+# dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=collate_fn) # can't use shuffle with TFRecordDataset
+# sampler = RandomSampler(dataset)
+# dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, sampler=sampler, collate_fn=collate_fn)
 dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn)
 
 # ───────────── Load Models ──────────────
-processor = AutoImageProcessor.from_pretrained("google/siglip2-base-patch16-224")
+processor = AutoProcessor.from_pretrained("google/siglip2-base-patch16-224")
+# image_encoder = AutoModel.from_pretrained("google/siglip2-base-patch16-224").to(DEVICE)
 image_encoder = SiglipVisionModel.from_pretrained("google/siglip2-base-patch16-224").to(DEVICE)
-text_embedder = TextEmbedder(model_name="google-t5/t5-base", max_len=MAX_TEXT_LEN, dtype=torch.float32).to(DEVICE)
+
+text_embedder = TextEmbedder(model_name="google-t5/t5-base", max_len=MAX_TEXT_LEN).to(DEVICE)
 
 # ───────────── Decoder Model ──────────────
 class SigLIP2CoCa(nn.Module):
-    def __init__(self, image_encoder, dim=768):
+    def __init__(self, image_encoder, dim=512):
         super().__init__()
         self.image_encoder = image_encoder
         self.cls_head = nn.Linear(dim, 2)
@@ -81,25 +85,21 @@ optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
 for epoch in range(EPOCHS):
     model.train()
     total_loss, total_cls, total_align = 0, 0, 0
-    num_batches = 0
-
     for imgs, labels, transcripts in dataloader:
         imgs = imgs.to(DEVICE)
-        # labels = labels.to(DEVICE)
-        labels = labels.to(DEVICE).long().squeeze()
+        labels = labels.to(DEVICE)
 
         # Temporarily use label names as transcripts
         text_inputs = ["AMD" if l == 1 else "Normal" for l in labels]
         ids_np, mask_np = text_embedder.tokenize(text_inputs)
-        input_ids = torch.tensor(ids_np).to(DEVICE)  # for TextEmbedder only
+        input_ids = torch.tensor(ids_np).to(DEVICE) # input_ids is only for TextEmbedder; NOT passed to SigLIP
         attn_mask = torch.tensor(mask_np).bool().to(DEVICE)
 
         with torch.no_grad():
-            encoded_text = text_embedder.encode(input_ids, attn_mask)  # (B, L, 768)
+            encoded_text = text_embedder.encode(input_ids, attn_mask)  # (B, L, D)
 
-        # Prepare image input — avoid double rescale
-        pixel_values = processor(images=imgs, return_tensors="pt", do_rescale=False).pixel_values.to(DEVICE)
-
+        # Prepare image input
+        pixel_values = processor(images=imgs, return_tensors="pt").pixel_values.to(DEVICE)
         cls_logits, dec_out = model(pixel_values, encoded_text)
 
         # Losses
@@ -114,19 +114,23 @@ for epoch in range(EPOCHS):
         total_loss += loss.item()
         total_cls += loss_cls.item()
         total_align += loss_align.item()
-        num_batches += 1
 
-    # avg_loss = total_loss / len(dataloader)
-    avg_loss = total_loss / num_batches
-    avg_cls_loss = total_cls / num_batches
-    avg_align_loss = total_align / num_batches
-    # print(f"Epoch {epoch+1}/{EPOCHS} | Total Loss: {avg_loss:.4f} | Cls Loss: {total_cls/len(dataloader):.4f} | Align Loss: {total_align/len(dataloader):.4f}")
-    print(f"Epoch {epoch+1}/{EPOCHS} | Total Loss: {avg_loss:.4f} | Cls Loss: {avg_cls_loss:.4f} | Align Loss: {avg_align_loss:.4f}")
+    avg_loss = total_loss / len(dataloader)
+    print(f"Epoch {epoch+1}/{EPOCHS} | Total Loss: {avg_loss:.4f} | Cls Loss: {total_cls/len(dataloader):.4f} | Align Loss: {total_align/len(dataloader):.4f}")
 
-# ───────────── Save Final Model ──────────────
+# Save model and optimizer state
 torch.save({
     'model_state_dict': model.state_dict(),
     'optimizer_state_dict': optimizer.state_dict(),
 }, 'siglip2_model_final.pt')
 
 print("Model saved as 'siglip2_model_final.pt'")
+
+# import os
+# os.makedirs("checkpoints", exist_ok=True)
+# torch.save(model.state_dict(), "checkpoints/siglip2_coca_final.pth")
+
+# checkpoint = torch.load('siglip2_model_final.pt')
+# model.load_state_dict(checkpoint['model_state_dict'])
+# optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+# model.eval()
