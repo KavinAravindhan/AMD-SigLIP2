@@ -192,3 +192,11 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# files & folders to ignore
+images_subset_rishabh/
+*.p
+*.tfrecord
+
+# .venv_amd is a virtual environment created for AMD-SigLIP2 project
+.venv_amd/

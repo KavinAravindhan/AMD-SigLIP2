@@ -6,7 +6,7 @@ def _bytes_feature(v): return tf.train.Feature(bytes_list=tf.train.BytesList(val
 def _int64_feature(v): return tf.train.Feature(int64_list=tf.train.Int64List(value=[v]))
 
 def main():
-    data = pickle.load(open('bscan_imgs.p', 'rb'))
+    data = pickle.load(open('bscan_amd_imgs.p', 'rb'))
     writer = tf.io.TFRecordWriter('dataset.tfrecord')
     for fname, rec in data.items():
         img = Image.fromarray(rec['original_image'])
