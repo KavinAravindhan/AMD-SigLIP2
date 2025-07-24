@@ -22,8 +22,8 @@ MODEL_SAVE_DIR = os.path.join(BASE_MODEL_SAVE_DIR, "optuna_search")
 
 # Fixed parameters
 MAX_TEXT_LEN = 128
-IMAGE_HEIGHT = 1055
-IMAGE_WIDTH = 703
+IMAGE_HEIGHT = 703
+IMAGE_WIDTH = 1055
 IMAGE_CHANNELS = 3
 
 # Device setup
@@ -51,8 +51,7 @@ def collate_fn(batch):
         try:
             img_bytes = item["normalized_image"]
             img_array = np.frombuffer(img_bytes, dtype=np.float32)
-            # Reshape to (WIDTH, HEIGHT, CHANNELS) as requested
-            img = img_array.reshape(IMAGE_WIDTH, IMAGE_HEIGHT, IMAGE_CHANNELS).copy()  # Copy to make writable
+            img = img_array.reshape(IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS).copy()  # Copy to make writable
             
             # Convert to tensor and resize to 224x224
             img = torch.from_numpy(img).permute(2, 0, 1)  # CHW format
@@ -90,19 +89,21 @@ def collate_fn(batch):
 class SigLIPModel(nn.Module):
     def __init__(self):
         super().__init__()
-        self.image_encoder = SiglipVisionModel.from_pretrained("google/siglip-base-patch16-224")
-        self.cls_head = nn.Linear(768, 2)
+        # Use Gemma3's SigLIP encoder with 1152 dimensions
+        self.image_encoder = SiglipVisionModel.from_pretrained("google/siglip-so400m-patch14-384")
+        # Update cls_head to use 1152 dimensions instead of 768
+        self.cls_head = nn.Linear(1152, 2)
 
         self.siglip_loss = SigLIPLoss(
-            latent_dim=768,
+            latent_dim=1152,  # Updated to match Gemma3's SigLIP encoder
             text_model="google-t5/t5-base",
-            max_txt_len=MAX_TEXT_LEN,
+            max_txt_len=MAX_TEXT_LEN,  # Now 128
             pool="mean",
             dtype=torch.float32
         )
         
     def forward(self, images, input_ids, attention_mask):
-        img_features = self.image_encoder(pixel_values=images).last_hidden_state  # (B, N, 768)
+        img_features = self.image_encoder(pixel_values=images).last_hidden_state  # (B, N, 1152)
         cls_logits = self.cls_head(img_features[:, 0])  # (B, 2)
         align_loss, _, _ = self.siglip_loss(img_features, input_ids, attention_mask)
         return cls_logits, align_loss
