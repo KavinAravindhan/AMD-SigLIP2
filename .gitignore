@@ -195,6 +195,12 @@ cython_debug/
 
 # files & folders to ignore
 images_subset_rishabh/
+ALL_IMAGES/
+inference_jsons/
+leo_files/
+runs/
+saved_models/
+data_tfrecords/
 *.p
 *.tfrecord
 *.pt
