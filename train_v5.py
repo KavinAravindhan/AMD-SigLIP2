@@ -14,7 +14,7 @@ from alignment import SigLIPLoss
 
 TFRECORD_PATH = "/Users/kavin/Columbia/Labs/Kaveri Lab/AMD-SigLIP2/data_v4.tfrecord"
 BATCH_SIZE = 8
-EPOCHS = 100
+EPOCHS = 50
 LEARNING_RATE = 1e-4
 MAX_TEXT_LEN = 128  # From the debug output, input_ids have length 128
 ALPHA = 0.5  # Loss weighting parameter: total_loss = alpha * cls_loss + (1-alpha) * align_loss
@@ -64,9 +64,13 @@ def collate_fn(batch):
             img_array = np.frombuffer(img_bytes, dtype=np.float32)
             img = img_array.reshape(IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS).copy()  # Copy to make writable
             
-            # Convert to tensor and resize to 224x224
+            # Convert to tensor and resize to 384x384 (to match siglip-so400m-patch14-384)
             img = torch.from_numpy(img).permute(2, 0, 1)  # CHW format
-            img = F.interpolate(img.unsqueeze(0), size=(224, 224), mode='bilinear', align_corners=False).squeeze(0)
+            img = F.interpolate(img.unsqueeze(0), size=(384, 384), mode='bilinear', align_corners=False).squeeze(0)
+            
+            # Normalize with SigLIP's expected values: mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5)
+            # This transforms from [0,1] to [-1,1] range
+            img = (img - 0.5) / 0.5
             images.append(img)
             
             # Decode label
@@ -117,7 +121,7 @@ class SigLIPModel(nn.Module):
         )
         
     def forward(self, images, input_ids, attention_mask):
-        img_features = self.image_encoder(pixel_values=images).last_hidden_state  # (B, N, 1152)
+        img_features = self.image_encoder(pixel_values=images).last_hidden_state  # (B, 729, 1152) for 384x384 images
         cls_logits = self.cls_head(img_features[:, 0])  # (B, 2)
         align_loss, _, _ = self.siglip_loss(img_features, input_ids, attention_mask)
         return cls_logits, align_loss
@@ -187,7 +191,7 @@ def main():
     print(f"Learning rate: {LEARNING_RATE}")
     print(f"Epochs: {EPOCHS}")
     print(f"Alpha (loss weighting): {ALPHA}")
-    print(f"Using Gemma3 SigLIP encoder with 1152 dimensions")
+    print(f"Using Gemma3 SigLIP encoder with 1152 dimensions (384x384 input)")
     print(f"Model save directory: {run_save_dir}\n")
     
     # Save training config
@@ -202,6 +206,8 @@ def main():
         'image_dimensions': f"{IMAGE_HEIGHT}x{IMAGE_WIDTH}x{IMAGE_CHANNELS}",
         'tfrecord_path': TFRECORD_PATH,
         'siglip_model': 'google/siglip-so400m-patch14-384',
+        'input_image_size': '384x384',
+        'image_normalization': 'mean=(0.5,0.5,0.5), std=(0.5,0.5,0.5)',
         'latent_dim': 1152
     }
     
