@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple
 
-from renaanalysis.text.embedder import TextEmbedder
+from embedder import TextEmbedder
 
 
 class SigLIPLoss(nn.Module):
