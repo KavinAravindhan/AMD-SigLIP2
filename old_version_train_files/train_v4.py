@@ -1,5 +1,3 @@
-# THIS VERSION IS SAME AS TRAIN_V4.PY
-
 import os
 import json
 import torch

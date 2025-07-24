@@ -203,6 +203,7 @@ runs/
 saved_models/
 inference_jsons/
 models_v2/
+models_v4/
 *.p
 *.tfrecord
 *.pt
