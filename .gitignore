@@ -202,6 +202,7 @@ data_tfrecords/
 runs/
 saved_models/
 inference_jsons/
+models_v2/
 *.p
 *.tfrecord
 *.pt

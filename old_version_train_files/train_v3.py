@@ -14,7 +14,7 @@ from alignment import SigLIPLoss
 
 TFRECORD_PATH = "/Users/kavin/Columbia/Labs/Kaveri Lab/AMD-SigLIP2/data_v4.tfrecord"
 BATCH_SIZE = 8
-EPOCHS = 100
+EPOCHS = 1
 LEARNING_RATE = 1e-4
 MAX_TEXT_LEN = 128  # From the debug output, input_ids have length 128
 ALPHA = 0.5  # Loss weighting parameter: total_loss = alpha * cls_loss + (1-alpha) * align_loss
@@ -62,8 +62,7 @@ def collate_fn(batch):
         try:
             img_bytes = item["normalized_image"]
             img_array = np.frombuffer(img_bytes, dtype=np.float32)
-            # Reshape to (WIDTH, HEIGHT, CHANNELS) as requested
-            img = img_array.reshape(IMAGE_WIDTH, IMAGE_HEIGHT, IMAGE_CHANNELS).copy()  # Copy to make writable
+            img = img_array.reshape(IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS)
             
             # Convert to tensor and resize to 224x224
             img = torch.from_numpy(img).permute(2, 0, 1)  # CHW format
@@ -126,11 +125,7 @@ def train_epoch(model, dataloader, optimizer, epoch):
     total_loss = total_cls = total_align = 0
     num_batches = 0
     
-    print(f"Starting epoch {epoch} - DataLoader length: {len(dataloader)}")
-    
     for batch_idx, (images, labels, input_ids, attention_mask) in enumerate(dataloader):
-        print(f"Processing batch {batch_idx}, batch size: {len(images)}")
-        
         images = images.to(DEVICE)
         labels = labels.to(DEVICE)
         input_ids = input_ids.to(DEVICE)
@@ -154,9 +149,8 @@ def train_epoch(model, dataloader, optimizer, epoch):
         total_align += align_loss.item()
         num_batches += 1
         
-        print(f"Epoch {epoch}, Batch {batch_idx}: Total={total_loss_batch.item():.4f}, Cls={cls_loss.item():.4f}, Align={align_loss.item():.4f}")
-    
-    print(f"Epoch {epoch} completed: Processed {num_batches} batches")
+        if batch_idx % 10 == 0:
+            print(f"Epoch {epoch}, Batch {batch_idx}: Total={total_loss_batch.item():.4f}, Batch size={len(images)}")
     
     if num_batches == 0:
         print("No valid batches in epoch!")
@@ -181,7 +175,7 @@ def save_model(model, optimizer, scheduler, epoch, loss, filename):
 
 def main():
     print(f"Starting SigLIP training...")
-    print(f"Image dimensions: {IMAGE_HEIGHT}x{IMAGE_WIDTH}x{IMAGE_CHANNELS} (reshaped as WIDTH x HEIGHT x CHANNELS)")
+    print(f"Image dimensions: {IMAGE_HEIGHT}x{IMAGE_WIDTH}x{IMAGE_CHANNELS}")
     print(f"Device: {DEVICE}")
     print(f"Batch size: {BATCH_SIZE}")
     print(f"Learning rate: {LEARNING_RATE}")
@@ -217,32 +211,15 @@ def main():
     
     print("Checking dataset...")
     test_dataset = TFRecordDataset(TFRECORD_PATH, None, description)
-    
-    # Count ALL samples in dataset
-    sample_count = 0
-    first_sample_info = None
-    
+
     for i, item in enumerate(test_dataset):
-        sample_count += 1
-        
-        # Save info from first sample
-        if i == 0:
-            img_bytes = item["normalized_image"]
-            first_sample_info = {
-                'bytes': len(img_bytes),
-                'expected_bytes': IMAGE_WIDTH*IMAGE_HEIGHT*IMAGE_CHANNELS*4,  # Total elements * 4 bytes per float32
-                'class': item['class'].decode('utf-8'),
-                'input_ids_len': len(item['input_ids']),
-                'attn_mask_len': len(item['attn_mask'])
-            }
-    
-    # Print dataset statistics
-    print(f"Total samples in dataset: {sample_count}")
-    print(f"Expected number of batches: {(sample_count + BATCH_SIZE - 1) // BATCH_SIZE}")
-    print(f"First sample: {first_sample_info['bytes']} bytes (expected: {first_sample_info['expected_bytes']} bytes)")
-    print(f"Class: {first_sample_info['class']}")
-    print(f"Input IDs length: {first_sample_info['input_ids_len']}")
-    print(f"Attention mask length: {first_sample_info['attn_mask_len']}\n")
+        if i >= 1:
+            break
+        img_bytes = item["normalized_image"]
+        print(f"First sample: {len(img_bytes)} bytes (expected: {IMAGE_HEIGHT*IMAGE_WIDTH*IMAGE_CHANNELS*4} bytes)")
+        print(f"Class: {item['class'].decode('utf-8')}")
+        print(f"Input IDs length: {len(item['input_ids'])}")
+        print(f"Attention mask length: {len(item['attn_mask'])}\n")
     
     print(f"Starting training for {EPOCHS} epochs...")
     print(f"Loss formula: total_loss = {ALPHA} * cls_loss + {1-ALPHA} * align_loss")
