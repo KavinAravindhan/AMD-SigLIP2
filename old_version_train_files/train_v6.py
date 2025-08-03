@@ -18,7 +18,7 @@ from alignment import SigLIPLoss
 
 # Updated TFRecord path for v2
 TFRECORD_PATH = "/Users/kavin/Columbia/Labs/Kaveri Lab/AMD-SigLIP2/VQA_v2.tfrecord"
-# ✅ CONFIGURABLE BATCH SIZE - Increase for better training efficiency
+# CONFIGURABLE BATCH SIZE - Increase for better training efficiency
 # With 59 unique images, you can use batch sizes up to 59
 # Recommended batch sizes and their trade-offs:
 # - 8:  Safe, lower memory usage, more gradient updates per epoch
@@ -93,7 +93,7 @@ aug = A.Compose([
     ToTensorV2()
 ])
 
-# ✅ FIXED TFRecord description - including the missing shape fields
+# FIXED TFRecord description - including the missing shape fields
 description = {
     "input_ids": "int",           # Flattened array
     "input_ids_shape": "int",     # Original shape (8, 128)
@@ -140,7 +140,7 @@ class UniqueImageDataset:
     
     def get_batch_items(self, batch_size):
         """Get a batch of unique items"""
-        # ✅ FIXED: Don't auto-reset - let the dataloader control epochs
+        # FIXED: Don't auto-reset - let the dataloader control epochs
         if len(self.used_indices) >= len(self.items):
             return []  # End of epoch - return empty batch
         
@@ -157,7 +157,7 @@ class UniqueImageDataset:
         return batch_items
 
 def collate_fn(batch):
-    """✅ FIXED: Custom collate function for TFRecord v2 format with flattened arrays"""
+    """FIXED: Custom collate function for TFRecord v2 format with flattened arrays"""
     images, labels, input_ids_list, attention_masks = [], [], [], []
     
     for item in batch:
@@ -184,7 +184,7 @@ def collate_fn(batch):
             label = 0 if class_str == 'n' else 1  # n=normal=0, w=wet=1
             labels.append(label)
             
-            # ✅ FIXED: Reconstruct multi-dimensional arrays from flattened data
+            # FIXED: Reconstruct multi-dimensional arrays from flattened data
             # Get flattened arrays and shapes
             input_ids_flat = np.array(item["input_ids"])
             input_ids_shape = tuple(item["input_ids_shape"])
@@ -197,25 +197,25 @@ def collate_fn(batch):
             
             # Debug: Verify reconstruction worked correctly (only for first item)
             if len(input_ids_list) == 0:  
-                print(f"✅ TFRecord v2 format successfully reconstructed:")
+                print(f"TFRecord v2 format successfully reconstructed:")
                 print(f"   Input IDs: {input_ids_flat.shape} -> {input_ids_array.shape}")
                 print(f"   Attention mask: {attn_mask_flat.shape} -> {attn_mask_array.shape}")
                 print(f"   Expected shape: ({NUM_CAPTIONS_PER_IMAGE}, {CAPTION_MAX_LENGTH})")
             
             # Verify we got the expected shape
             if input_ids_array.shape != (NUM_CAPTIONS_PER_IMAGE, CAPTION_MAX_LENGTH):
-                print(f"⚠️  Unexpected reconstructed shape: {input_ids_array.shape}")
+                print(f"Unexpected reconstructed shape: {input_ids_array.shape}")
                 print(f"   Expected: ({NUM_CAPTIONS_PER_IMAGE}, {CAPTION_MAX_LENGTH})")
             
-            # ✅ RANDOM CAPTION SELECTION: Choose 1 of 8 captions randomly
+            # RANDOM CAPTION SELECTION: Choose 1 of 8 captions randomly
             caption_idx = random.randint(0, NUM_CAPTIONS_PER_IMAGE - 1)
             selected_input_ids = input_ids_array[caption_idx]     # Shape: (128,)
             selected_attn_mask = attn_mask_array[caption_idx]     # Shape: (128,)
             
             if len(input_ids_list) == 0:  # Debug for first item
-                print(f"   🎲 Randomly selected caption {caption_idx + 1} of {NUM_CAPTIONS_PER_IMAGE}")
+                print(f"   Randomly selected caption {caption_idx + 1} of {NUM_CAPTIONS_PER_IMAGE}")
                 valid_tokens = np.sum(selected_attn_mask)
-                print(f"   📝 Selected caption has {valid_tokens} valid tokens")
+                print(f"   Selected caption has {valid_tokens} valid tokens")
             
             # Convert to tensors
             input_ids = torch.tensor(selected_input_ids, dtype=torch.long)
@@ -252,12 +252,12 @@ def create_dataloader():
             self.batch_size = batch_size
         
         def __iter__(self):
-            # ✅ FIXED: Reset at the start of each epoch and track progress
+            # FIXED: Reset at the start of each epoch and track progress
             self.dataset.used_indices.clear()
             total_items = len(self.dataset.items)
             items_yielded = 0
             
-            # ✅ FIXED: Use finite loop based on dataset size
+            # FIXED: Use finite loop based on dataset size
             while items_yielded < total_items:
                 batch_items = self.dataset.get_batch_items(self.batch_size)
                 if len(batch_items) == 0:
@@ -272,7 +272,7 @@ def create_dataloader():
                     print(f"Error in batch processing: {e}")
                     continue
             
-            print(f"✅ Epoch completed: processed {items_yielded}/{total_items} items")
+            print(f"Epoch completed: processed {items_yielded}/{total_items} items")
         
         def __len__(self):
             return (len(self.dataset) + self.batch_size - 1) // self.batch_size
@@ -282,14 +282,14 @@ def create_dataloader():
 class SigLIPModel(nn.Module):
     def __init__(self):
         super().__init__()
-        # ✅ USING GEMMA3's SigLIP encoder: google/siglip-so400m-patch14-384
+        # USING GEMMA3's SigLIP encoder: google/siglip-so400m-patch14-384
         # This model outputs 1152-dimensional features (NOT 768 like older models)
         self.image_encoder = SiglipVisionModel.from_pretrained("google/siglip-so400m-patch14-384")
         
-        # ✅ Classification head uses 1152 input dimensions (matches Gemma3 SigLIP)
+        # Classification head uses 1152 input dimensions (matches Gemma3 SigLIP)
         self.cls_head = nn.Linear(1152, 2)  # 1152 -> 2 classes (normal/wet)
 
-        # ✅ SigLIP loss configured for 1152 latent dimensions (Gemma3 compatible)
+        # SigLIP loss configured for 1152 latent dimensions (Gemma3 compatible)
         self.siglip_loss = SigLIPLoss(
             latent_dim=1152,  # ← GEMMA3 SigLIP dimension (NOT 768)
             text_model="google-t5/t5-base",
@@ -306,7 +306,7 @@ class SigLIPModel(nn.Module):
             input_ids: (B, seq_len) tensor of token ids
             attention_mask: (B, seq_len) tensor of attention mask
         """
-        # ✅ Extract 1152-dimensional features from Gemma3's SigLIP encoder
+        # Extract 1152-dimensional features from Gemma3's SigLIP encoder
         img_features = self.image_encoder(pixel_values=images).last_hidden_state  # (B, 729, 1152)
         
         # Classification: Use CLS token (first token) with 1152 dimensions
@@ -322,7 +322,7 @@ def train_epoch(model, dataloader, optimizer, epoch):
     total_loss = total_cls = total_align = 0
     num_batches = 0
     
-    print(f"\n🚀 Starting epoch {epoch}")
+    print(f"\nStarting epoch {epoch}")
     
     for batch_idx, (images, labels, input_ids, attention_mask) in enumerate(dataloader):
         print(f"Processing batch {batch_idx + 1}, batch size: {len(images)}")
@@ -352,10 +352,10 @@ def train_epoch(model, dataloader, optimizer, epoch):
         
         print(f"Epoch {epoch}, Batch {batch_idx + 1}: Total={total_loss_batch.item():.4f}, Cls={cls_loss.item():.4f}, Align={align_loss.item():.4f}")
     
-    print(f"🏁 Epoch {epoch} completed: Processed {num_batches} batches")
+    print(f"Epoch {epoch} completed: Processed {num_batches} batches")
     
     if num_batches == 0:
-        print("⚠️  No valid batches in epoch!")
+        print("No valid batches in epoch!")
         return 0, 0, 0
     
     return total_loss/num_batches, total_cls/num_batches, total_align/num_batches
@@ -375,7 +375,7 @@ def save_model(model, optimizer, scheduler, epoch, loss, filename):
     print(f"Saved: {filepath}")
 
 def main():
-    print(f"✅ USING GEMMA3's SigLIP ENCODER:")
+    print(f"USING GEMMA3's SigLIP ENCODER:")
     print(f"   Model: google/siglip-so400m-patch14-384")
     print(f"   Latent dimension: 1152 (NOT 768)")
     print(f"   Input image size: 384x384")
@@ -388,10 +388,10 @@ def main():
     print(f"Image augmentation: Enabled (geometric + photometric)")
     print(f"Random seed: {RANDOM_SEED if RANDOM_SEED is not None else 'None (true randomness)'}")
     print(f"SigLIP constraint: Unique images per batch")
-    print(f"✅ FIXED: TFRecord description now includes shape fields")
-    print(f"✅ FIXED: Infinite loop resolved - proper epoch boundaries")
-    print(f"📈 BATCH SIZE OPTIMIZATION: Consider 16, 32, or 48 for better gradient estimates")
-    print(f"💡 SIGLIP BENEFITS: Larger batches provide more negative pairs for contrastive learning")
+    print(f"FIXED: TFRecord description now includes shape fields")
+    print(f"FIXED: Infinite loop resolved - proper epoch boundaries")
+    print(f"BATCH SIZE OPTIMIZATION: Consider 16, 32, or 48 for better gradient estimates")
+    print(f"SIGLIP BENEFITS: Larger batches provide more negative pairs for contrastive learning")
     print(f"Model save directory: {run_save_dir}\n")
     
     # Save training config
@@ -429,13 +429,13 @@ def main():
     # Create model and dataloader
     model = SigLIPModel().to(DEVICE)
     
-    # ✅ VERIFY GEMMA3 SigLIP DIMENSIONS
-    print(f"\n🔍 Model Architecture Verification:")
+    # VERIFY GEMMA3 SigLIP DIMENSIONS
+    print(f"\nModel Architecture Verification:")
     print(f"   Image encoder: {model.image_encoder.__class__.__name__}")
     print(f"   Image encoder config: {model.image_encoder.config.hidden_size}D features")
     print(f"   Classification head: {model.cls_head.in_features} -> {model.cls_head.out_features}")
     print(f"   SigLIP loss configured for: 1152 latent dimensions")
-    print(f"   ✅ All components use 1152 dimensions (Gemma3 compatible)")
+    print(f"   All components use 1152 dimensions (Gemma3 compatible)")
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -478,9 +478,9 @@ def main():
     
     for epoch in range(EPOCHS):
         final_epoch = epoch + 1
-        print(f"\n📊 Starting Epoch {epoch+1}/{EPOCHS}")
+        print(f"\nStarting Epoch {epoch+1}/{EPOCHS}")
         
-        # ✅ SAFETY: Set a maximum time per epoch (optional)
+        # SAFETY: Set a maximum time per epoch (optional)
         import time
         epoch_start_time = time.time()
         MAX_EPOCH_TIME = 600  # 1 hour max per epoch
@@ -489,11 +489,11 @@ def main():
         avg_total, avg_cls, avg_align = train_epoch(model, dataloader, optimizer, epoch+1)
         
         epoch_duration = time.time() - epoch_start_time
-        print(f"⏱️  Epoch {epoch+1} duration: {epoch_duration:.1f} seconds")
+        print(f"Epoch {epoch+1} duration: {epoch_duration:.1f} seconds")
         
-        # ✅ SAFETY: Check if epoch took too long (indicates infinite loop)
+        # SAFETY: Check if epoch took too long (indicates infinite loop)
         if epoch_duration > MAX_EPOCH_TIME:
-            print(f"🚨 Epoch {epoch+1} took {epoch_duration:.1f}s (>{MAX_EPOCH_TIME}s). Possible infinite loop!")
+            print(f"Epoch {epoch+1} took {epoch_duration:.1f}s (>{MAX_EPOCH_TIME}s). Possible infinite loop!")
             print("Consider debugging the dataloader.")
         
         # Save history
@@ -502,7 +502,7 @@ def main():
         history['align_loss'].append(avg_align)
         
         # Log
-        print(f"📈 Total Loss: {avg_total:.4f}, Cls Loss: {avg_cls:.4f}, Align Loss: {avg_align:.4f}")
+        print(f"Total Loss: {avg_total:.4f}, Cls Loss: {avg_cls:.4f}, Align Loss: {avg_align:.4f}")
         writer.add_scalar('Loss/Total', avg_total, epoch)
         writer.add_scalar('Loss/Classification', avg_cls, epoch)
         writer.add_scalar('Loss/Alignment', avg_align, epoch)
@@ -525,7 +525,7 @@ def main():
         
         # Early stopping
         if patience_counter >= patience:
-            print(f"\n🛑 Early stopping triggered at epoch {epoch+1}")
+            print(f"\nEarly stopping triggered at epoch {epoch+1}")
             break
     
     # Save final model
