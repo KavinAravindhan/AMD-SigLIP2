@@ -1,3 +1,5 @@
+# Same as train_v6.py
+
 import os
 import json
 import torch
@@ -32,7 +34,7 @@ LEARNING_RATE = 1e-4  # Consider scaling with batch size: larger batches may nee
 MAX_TEXT_LEN = 128
 
 # Loss weighting: total_loss = alpha * cls_loss + (1-alpha) * align_loss
-# Since text data is currently placeholder, consider increasing ALPHA (e.g., 0.8 or 0.9)
+# Since data is currently placeholder, consider increasing ALPHA (e.g., 0.8 or 0.9)
 # to focus more on classification until proper text data is available
 ALPHA = 0.5  # Default: equal weighting. Increase to 0.8-0.9 if text data is placeholder
 
