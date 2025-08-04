@@ -1,41 +1,3 @@
-"""
-Optuna Hyperparameter Search for SigLIP Training with Vision Encoder Comparison
-
-SCIENTIFIC COMPARISON: Gemma3 vs MedGemma SigLIP Encoders
-===========================================================
-
-This script compares two vision encoders in a rigorous hyperparameter search:
-
-1. **Gemma3 SigLIP** (google/siglip-so400m-patch14-384)
-   - General-purpose vision encoder
-   - Trained on diverse internet images
-   - 1152 latent dimensions
-
-2. **MedGemma SigLIP** (extracted from google/medgemma-4b-it)
-   - Medical-specific vision encoder  
-   - Pre-trained on chest X-rays, dermatology, ophthalmology, histopathology
-   - Same 1152 latent dimensions
-   - Expected better performance on medical imaging tasks
-
-RESEARCH HYPOTHESIS:
-Medical pre-training should provide better feature representations for OCT imaging
-and AMD classification compared to general-purpose pre-training.
-
-SETUP REQUIREMENTS:
-- Request access to google/medgemma-4b-it on Hugging Face
-- Accept Health AI Developer Foundation terms
-- Run verify_medgemma_setup() to test access
-
-FRAMEWORK FEATURES:
-- Automatic model loading with fallbacks
-- Memory-efficient vision encoder extraction
-- Complete hyperparameter optimization
-- TensorBoard logging per trial
-- Scientific comparison analysis
-
-READY TO RUN: Both encoders fully integrated with official APIs
-"""
-
 import os
 import json
 import torch
@@ -57,12 +19,11 @@ import time
 import optuna
 import pickle
 import matplotlib.pyplot as plt
+from tqdm import tqdm
 
-# Updated TFRecord path for v2
 TFRECORD_PATH = "/Users/kavin/Columbia/Labs/Kaveri Lab/AMD-SigLIP2/VQA_v2.tfrecord"
 
-# Fixed hyperparameters
-EPOCHS = 100  # Changed from 50 to 100 as requested
+EPOCHS = 50
 MAX_TEXT_LEN = 128
 
 # Original image dimensions from TFRecord
@@ -91,7 +52,7 @@ run_save_dir = os.path.join(MODEL_SAVE_DIR, f"optuna_run_{timestamp}")
 os.makedirs(run_save_dir, exist_ok=True)
 print(f"Models will be saved to: {run_save_dir}")
 
-# FIXED TFRecord description - including the missing shape fields
+# TFRecord description
 description = {
     "input_ids": "int",           # Flattened array
     "input_ids_shape": "int",     # Original shape (8, 128)
@@ -101,9 +62,14 @@ description = {
     "normalized_image": "byte"    # 8,899,980 bytes = 1055×703×3 float32 values
 }
 
-# Caption settings (ACTUAL format based on your data creation)
+# Caption settings
 NUM_CAPTIONS_PER_IMAGE = 8   # 8 VQA explanations per image
 CAPTION_MAX_LENGTH = 128     # T5 tokenizer max length
+
+# Global cache for MedGemma vision encoder to avoid reloading
+_MEDGEMMA_VISION_ENCODER_CACHE = None
+_MEDGEMMA_LOAD_ATTEMPTED = False
+_MEDGEMMA_LOAD_SUCCESS = False
 
 def get_augmentation_pipeline(trial):
     """Create augmentation pipeline with hyperparameter search"""
@@ -161,16 +127,24 @@ def parse_and_augment_image(img_bytes, aug_pipeline):
 class UniqueImageDataset:
     """Wrapper to ensure no duplicate images in the same batch"""
     def __init__(self, tfrecord_path, description):
+        print("Loading TFRecord dataset...")
         self.dataset = TFRecordDataset(tfrecord_path, None, description)
-        self.items = list(self.dataset)  # Load all items into memory
+        
+        # Load all items into memory with progress bar
+        print("Reading all TFRecord items into memory...")
+        self.items = []
+        for item in tqdm(self.dataset, desc="Loading dataset"):
+            self.items.append(item)
+        
         self.used_indices = set()
+        print(f"Dataset loaded: {len(self.items)} items")
         
     def __len__(self):
         return len(self.items)
     
     def get_batch_items(self, batch_size):
         """Get a batch of unique items"""
-        # FIXED: Don't auto-reset - let the dataloader control epochs
+        # Don't auto-reset - let the dataloader control epochs
         if len(self.used_indices) >= len(self.items):
             return []  # End of epoch - return empty batch
         
@@ -187,7 +161,7 @@ class UniqueImageDataset:
         return batch_items
 
 def collate_fn(batch, aug_pipeline):
-    """FIXED: Custom collate function for TFRecord v2 format with flattened arrays"""
+    """Custom collate function for TFRecord v2 format with flattened arrays"""
     images, labels, input_ids_list, attention_masks = [], [], [], []
     
     for item in batch:
@@ -214,7 +188,7 @@ def collate_fn(batch, aug_pipeline):
             label = 0 if class_str == 'n' else 1  # n=normal=0, w=wet=1
             labels.append(label)
             
-            # FIXED: Reconstruct multi-dimensional arrays from flattened data
+            # Reconstruct multi-dimensional arrays from flattened data
             # Get flattened arrays and shapes
             input_ids_flat = np.array(item["input_ids"])
             input_ids_shape = tuple(item["input_ids_shape"])
@@ -266,12 +240,12 @@ def create_dataloader(batch_size, aug_pipeline):
             self.aug_pipeline = aug_pipeline
         
         def __iter__(self):
-            # FIXED: Reset at the start of each epoch and track progress
+            # Reset at the start of each epoch and track progress
             self.dataset.used_indices.clear()
             total_items = len(self.dataset.items)
             items_yielded = 0
             
-            # FIXED: Use finite loop based on dataset size
+            # Use finite loop based on dataset size
             while items_yielded < total_items:
                 batch_items = self.dataset.get_batch_items(self.batch_size)
                 if len(batch_items) == 0:
@@ -291,52 +265,108 @@ def create_dataloader(batch_size, aug_pipeline):
     return CustomDataLoader(unique_dataset, batch_size, aug_pipeline)
 
 def load_medgemma_vision_encoder():
-    """Load MedGemma vision encoder with proper error handling"""
+    """Load MedGemma vision encoder with proper error handling and caching"""
+    global _MEDGEMMA_VISION_ENCODER_CACHE, _MEDGEMMA_LOAD_ATTEMPTED, _MEDGEMMA_LOAD_SUCCESS
+    
+    # Return cached encoder if already loaded successfully
+    if _MEDGEMMA_LOAD_SUCCESS and _MEDGEMMA_VISION_ENCODER_CACHE is not None:
+        print("Using cached MedGemma vision encoder")
+        return _MEDGEMMA_VISION_ENCODER_CACHE
+    
+    # If already tried and failed, don't try again
+    if _MEDGEMMA_LOAD_ATTEMPTED and not _MEDGEMMA_LOAD_SUCCESS:
+        print("MedGemma loading previously failed, using fallback")
+        return None
+    
     try:
         print("Loading MedGemma model...")
+        _MEDGEMMA_LOAD_ATTEMPTED = True
+        
         # Load the full MedGemma model
         full_model = AutoModelForImageTextToText.from_pretrained(
             "google/medgemma-4b-it",
             trust_remote_code=True,
             torch_dtype=torch.float32,  # Use float32 for training
-            device_map=None  # Don't auto-assign devices
+            device_map=None,  # Avoid accelerate dependency issues
+            low_cpu_mem_usage=True  # More memory efficient loading
         )
         
+        print("MedGemma model loaded successfully, extracting vision encoder...")
+        
         # Try different possible vision component names
-        vision_component_names = ['vision_tower', 'vision_model', 'vision_encoder', 'visual_encoder']
+        vision_component_names = [
+            'vision_tower',    # Most common in multimodal models
+            'vision_model', 
+            'vision_encoder',
+            'visual_encoder',
+            'vision',
+            'visual_model'
+        ]
+        
         vision_encoder = None
         
         for attr_name in vision_component_names:
             if hasattr(full_model, attr_name):
-                vision_encoder = getattr(full_model, attr_name)
-                print(f"Found vision encoder: {attr_name}")
-                break
+                component = getattr(full_model, attr_name)
+                # Verify it's actually a vision encoder (has expected methods)
+                if hasattr(component, 'forward') or hasattr(component, '__call__'):
+                    vision_encoder = component
+                    print(f"SUCCESS: Found vision encoder: {attr_name}")
+                    break
         
         if vision_encoder is None:
-            # Try to find vision-related attributes
-            vision_attrs = [attr for attr in dir(full_model) if 'vision' in attr.lower() or 'visual' in attr.lower()]
+            # Try to find vision-related attributes more broadly
+            all_attrs = [attr for attr in dir(full_model) if not attr.startswith('_')]
+            vision_attrs = [attr for attr in all_attrs if 'vision' in attr.lower() or 'visual' in attr.lower()]
+            
             if vision_attrs:
-                print(f"Available vision attributes: {vision_attrs}")
-                # Try the first one
-                vision_encoder = getattr(full_model, vision_attrs[0])
-                print(f"Using: {vision_attrs[0]}")
-            else:
+                print(f"Available vision-related attributes: {vision_attrs}")
+                # Try the first callable one
+                for attr_name in vision_attrs:
+                    component = getattr(full_model, attr_name)
+                    if hasattr(component, 'forward') or hasattr(component, '__call__'):
+                        vision_encoder = component
+                        print(f"SUCCESS: Using vision component: {attr_name}")
+                        break
+            
+            if vision_encoder is None:
+                print("ERROR: Available model attributes:")
+                model_attrs = [attr for attr in dir(full_model) if not attr.startswith('_')]
+                print(f"   {model_attrs}")
                 raise ValueError("No vision encoder component found in MedGemma model")
         
         # Verify the encoder has the expected structure
-        if hasattr(vision_encoder, 'config') and hasattr(vision_encoder.config, 'hidden_size'):
-            print(f"Vision encoder hidden size: {vision_encoder.config.hidden_size}")
+        if hasattr(vision_encoder, 'config'):
+            config = vision_encoder.config
+            if hasattr(config, 'hidden_size'):
+                print(f"SUCCESS: Vision encoder hidden size: {config.hidden_size}")
+            if hasattr(config, 'image_size'):
+                print(f"SUCCESS: Vision encoder image size: {config.image_size}")
+        else:
+            print("WARNING: Vision encoder config not found, but component loaded")
         
+        # Cache the successfully loaded encoder
+        _MEDGEMMA_VISION_ENCODER_CACHE = vision_encoder
+        _MEDGEMMA_LOAD_SUCCESS = True
+        
+        print("SUCCESS: MedGemma vision encoder loaded and cached successfully!")
         return vision_encoder
         
     except Exception as e:
-        print(f"Failed to load MedGemma vision encoder: {e}")
-        if "401" in str(e) or "access" in str(e).lower():
-            print("Access issue detected. To enable MedGemma:")
-            print("1. Go to: https://huggingface.co/google/medgemma-4b-it")
-            print("2. Click 'Request access'")
-            print("3. Agree to Health AI Developer Foundation terms")
-            print("4. Wait for approval (usually immediate)")
+        print(f"ERROR: Failed to load MedGemma vision encoder: {e}")
+        _MEDGEMMA_LOAD_SUCCESS = False
+        
+        error_str = str(e)
+        if "401" in error_str or "access" in error_str.lower() or "gated" in error_str.lower():
+            print("\nACCESS ISSUE")
+        elif "memory" in error_str.lower() or "out of memory" in error_str.lower():
+            print("\nMEMORY ISSUE")
+        elif "network" in error_str.lower() or "connection" in error_str.lower():
+            print("\nNETWORK ISSUE")
+        else:
+            print(f"\nUNEXPECTED ERROR: {error_str}")
+        
+        print("\nFALLBACK: Will use Gemma3 SigLIP for this hyperparameter search")
         return None
 
 class SigLIPModel(nn.Module):
@@ -394,7 +424,7 @@ class SigLIPModel(nn.Module):
         self.siglip_loss = SigLIPLoss(
             latent_dim=encoder_output_dim,  # Dynamic based on chosen encoder
             text_model=text_model_choice,
-            max_txt_len=MAX_TEXT_LEN,
+            max_txt_len=MAX_TEXT_LEN,  # Fixed at 128
             pool="mean",
             dtype=torch.float32
         )
@@ -428,9 +458,12 @@ def train_epoch(model, dataloader, optimizer, epoch, alpha, writer=None, trial_n
     total_loss = total_cls = total_align = 0
     num_batches = 0
     
-    print(f"Starting epoch {epoch}")
+    print(f"\nStarting epoch {epoch}")
     
-    for batch_idx, (images, labels, input_ids, attention_mask) in enumerate(dataloader):
+    # Create progress bar for batches
+    pbar = tqdm(enumerate(dataloader), desc=f"Epoch {epoch}", total=len(dataloader))
+    
+    for batch_idx, (images, labels, input_ids, attention_mask) in pbar:
         images = images.to(DEVICE)
         labels = labels.to(DEVICE)
         input_ids = input_ids.to(DEVICE)
@@ -454,16 +487,21 @@ def train_epoch(model, dataloader, optimizer, epoch, alpha, writer=None, trial_n
         total_align += align_loss.item()
         num_batches += 1
         
+        # Update progress bar
+        pbar.set_postfix({
+            'Total': f'{total_loss_batch.item():.4f}',
+            'Cls': f'{cls_loss.item():.4f}',
+            'Align': f'{align_loss.item():.4f}'
+        })
+        
         # Log to TensorBoard every batch (optional - can be reduced for performance)
         if writer is not None:
             global_step = (epoch - 1) * len(dataloader) + batch_idx
             writer.add_scalar(f'Batch/Total_Loss', total_loss_batch.item(), global_step)
             writer.add_scalar(f'Batch/Classification_Loss', cls_loss.item(), global_step)
             writer.add_scalar(f'Batch/Alignment_Loss', align_loss.item(), global_step)
-        
-        if batch_idx % 5 == 0:  # Print every 5 batches to reduce output
-            print(f"Epoch {epoch}, Batch {batch_idx + 1}: Total={total_loss_batch.item():.4f}, Cls={cls_loss.item():.4f}, Align={align_loss.item():.4f}")
     
+    pbar.close()
     print(f"Epoch {epoch} completed: Processed {num_batches} batches")
     
     if num_batches == 0:
@@ -513,12 +551,9 @@ def objective(trial):
     scheduler_factor = trial.suggest_float("scheduler_factor", 0.1, 0.8)
     
     # Early stopping hyperparameters
-    early_stopping_patience = trial.suggest_int("early_stopping_patience", 5, 15)
+    early_stopping_patience = trial.suggest_int("early_stopping_patience", 5, 20)
     
-    # Text length hyperparameter
-    max_text_len = trial.suggest_categorical("max_text_len", [64, 128, 256])
-    
-    print(f"Trial {trial.number} hyperparameters:")
+    print(f"\nTrial {trial.number} hyperparameters:")
     print(f"  Batch size: {batch_size}")
     print(f"  Learning rate: {learning_rate}")
     print(f"  Alpha: {alpha:.3f}")
@@ -527,7 +562,7 @@ def objective(trial):
     print(f"  Scheduler patience: {scheduler_patience}")
     print(f"  Scheduler factor: {scheduler_factor:.3f}")
     print(f"  Early stopping patience: {early_stopping_patience}")
-    print(f"  Max text length: {max_text_len}")
+    print(f"  Max text length: {MAX_TEXT_LEN} (FIXED)")
     
     # Create trial-specific logging directory
     trial_dir = os.path.join(run_save_dir, f"trial_{trial.number}")
@@ -552,7 +587,7 @@ def objective(trial):
             'scheduler_patience': scheduler_patience,
             'scheduler_factor': scheduler_factor,
             'early_stopping_patience': early_stopping_patience,
-            'max_text_len': max_text_len
+            'max_text_len': MAX_TEXT_LEN
         },
         'epoch_losses': [],
         'epoch_durations': [],
@@ -629,13 +664,16 @@ def objective(trial):
             'dropout_rate': trial.params.get('dropout_rate', 0.0)
         }
         
-        # Training loop
+        # Training loop with progress bar
         best_loss = float('inf')
         patience_counter = 0
         best_model_state = None
         best_epoch = 0
         
-        for epoch in range(EPOCHS):
+        # Create progress bar for epochs
+        epoch_pbar = tqdm(range(EPOCHS), desc=f"Trial {trial.number}", unit="epoch")
+        
+        for epoch in epoch_pbar:
             epoch_start_time = time.time()
             
             # Train epoch with TensorBoard logging
@@ -645,6 +683,13 @@ def objective(trial):
             )
             
             epoch_duration = time.time() - epoch_start_time
+            
+            # Update epoch progress bar
+            epoch_pbar.set_postfix({
+                'Loss': f'{avg_total:.4f}',
+                'Best': f'{best_loss:.4f}',
+                'Patience': f'{patience_counter}/{early_stopping_patience}'
+            })
             
             # Log additional metrics to TensorBoard
             writer.add_scalar('Training/Epoch_Duration', epoch_duration, epoch + 1)
@@ -671,6 +716,7 @@ def objective(trial):
                 # Log final hyperparameters and results to TensorBoard
                 writer.add_hparams(hparams, {'final_loss': avg_total, 'status': 0})  # 0 for pruned
                 writer.close()
+                epoch_pbar.close()
                 # Save trial log before pruning
                 with open(os.path.join(trial_dir, 'trial_log.json'), 'w') as f:
                     json.dump(trial_log, f, indent=2)
@@ -695,7 +741,7 @@ def objective(trial):
                     'hyperparameters': trial_log['hyperparameters'].copy()
                 }
                 best_epoch = epoch + 1
-                print(f"New best loss for trial {trial.number}: {best_loss:.4f} at epoch {epoch+1}")
+                print(f" New best loss for trial {trial.number}: {best_loss:.4f} at epoch {epoch+1}")
             else:
                 patience_counter += 1
             
@@ -704,8 +750,8 @@ def objective(trial):
                 trial_log['status'] = 'early_stopped'
                 trial_log['early_stopped_at_epoch'] = epoch + 1
                 break
-            
-            print(f"Epoch {epoch+1}: Loss={avg_total:.4f}, Duration={epoch_duration:.1f}s")
+        
+        epoch_pbar.close()
         
         trial_log['status'] = 'completed'
         trial_log['best_loss'] = best_loss
@@ -742,6 +788,8 @@ def objective(trial):
         # Close writer even for failed trials
         if 'writer' in locals():
             writer.close()
+        if 'epoch_pbar' in locals():
+            epoch_pbar.close()
         # Save trial log even for failed trials
         with open(os.path.join(trial_dir, 'trial_log.json'), 'w') as f:
             json.dump(trial_log, f, indent=2)
@@ -756,7 +804,7 @@ def create_visualizations(study, save_dir):
         plots_dir = os.path.join(save_dir, 'plots')
         os.makedirs(plots_dir, exist_ok=True)
         
-        # 1. Optimization history
+        # Optimization history
         fig, ax = plt.subplots(figsize=(10, 6))
         values = [trial.value for trial in study.trials if trial.value is not None]
         ax.plot(values, 'b-', alpha=0.7)
@@ -768,7 +816,7 @@ def create_visualizations(study, save_dir):
         plt.savefig(os.path.join(plots_dir, 'optimization_history.png'), dpi=300, bbox_inches='tight')
         plt.close()
         
-        # 2. Parameter importance (if enough trials)
+        # Parameter importance (if enough trials)
         if len(study.trials) >= 10:
             try:
                 importance = optuna.importance.get_param_importances(study)
@@ -794,7 +842,7 @@ def create_visualizations(study, save_dir):
             except Exception as e:
                 print(f"Could not create parameter importance plot: {e}")
         
-        # 3. Best value over time
+        # Best value over time
         fig, ax = plt.subplots(figsize=(10, 6))
         best_values = []
         current_best = float('inf')
@@ -830,50 +878,31 @@ def verify_medgemma_setup():
         print("Testing MedGemma access using official API...")
         print("API: AutoModelForImageTextToText.from_pretrained('google/medgemma-4b-it')")
         
-        # Use official MedGemma API as documented
-        model = AutoModelForImageTextToText.from_pretrained(
-            "google/medgemma-4b-it", 
-            trust_remote_code=True,
-            torch_dtype=torch.float16,
-            device_map="cpu"  # CPU for testing
-        )
+        # Test the actual loading function
+        vision_encoder = load_medgemma_vision_encoder()
         
-        print("MedGemma model accessible!")
-        print(f"Model type: {type(model)}")
-        
-        # Inspect vision-related components
-        vision_attrs = [attr for attr in dir(model) if 'vision' in attr.lower() and not attr.startswith('_')]
-        print(f"Vision-related attributes: {vision_attrs}")
-        
-        # Check for common vision component names
-        component_found = None
-        for attr_name in ['vision_tower', 'vision_model', 'vision_encoder', 'visual_encoder']:
-            if hasattr(model, attr_name):
-                component = getattr(model, attr_name)
-                print(f"Found {attr_name}: {type(component)}")
-                if hasattr(component, 'config') and hasattr(component.config, 'hidden_size'):
-                    print(f"Hidden size: {component.config.hidden_size}")
-                component_found = attr_name
-                break
-        
-        if component_found:
-            print(f"Vision encoder component identified: {component_found}")
-            return True, component_found
+        if vision_encoder is not None:
+            print("SUCCESS! MedGemma vision encoder is accessible and ready")
+            print(f"   Vision encoder type: {type(vision_encoder)}")
+            
+            # Test if encoder is trainable
+            if hasattr(vision_encoder, 'parameters'):
+                param_count = sum(p.numel() for p in vision_encoder.parameters())
+                trainable_params = sum(p.numel() for p in vision_encoder.parameters() if p.requires_grad)
+                print(f"   Total parameters: {param_count:,}")
+                print(f"   Trainable parameters: {trainable_params:,}")
+            
+            print("\nMedGemma is ready for hyperparameter search!")
+            print("   Search will compare Gemma3 SigLIP vs MedGemma SigLIP")
+            return True, "success"
         else:
-            print("Vision component found but name unclear")
-            return True, "unknown"
+            print("MedGemma vision encoder could not be loaded")
+            print("   Search will use only Gemma3 SigLIP")
+            return False, "load_failed"
             
     except Exception as e:
-        print(f"MedGemma not accessible: {e}")
-        if "401" in str(e) or "access" in str(e).lower():
-            print("Access issue detected. To enable MedGemma:")
-            print("1. Go to: https://huggingface.co/google/medgemma-4b-it")
-            print("2. Click 'Request access'")
-            print("3. Agree to Health AI Developer Foundation terms")
-            print("4. Wait for approval (usually immediate)")
-        else:
-            print("This might be a network or dependency issue")
-        return False, None
+        print(f"Verification failed: {e}")
+        return False, "error"
 
 def save_best_model_across_trials(study, run_save_dir):
     """Save the best model from the best trial"""
@@ -946,17 +975,27 @@ def main():
     print(f"   Gemma3 SigLIP: google/siglip-so400m-patch14-384 (General-purpose)")
     print(f"   MedGemma SigLIP: Extracted from google/medgemma-4b-it (Medical-trained)")
     print(f"   Both encoders: 1152 latent dimensions, 384x384 input")
-    print(f"   Comparison: General vs Medical pre-training effectiveness")
     print(f"Device: {DEVICE}")
     print(f"Epochs per trial: {EPOCHS}")
     print(f"TFRecord path: {TFRECORD_PATH}")
     print(f"Model save directory: {run_save_dir}")
     print(f"TensorBoard logging: Enabled (per trial)")
     print("")
-    print("READY: Both encoders integrated using official APIs")
-    print("   - Gemma3: Direct SiglipVisionModel loading")
-    print("   - MedGemma: AutoModelForImageTextToText + vision extraction")
-    print("   - Automatic fallback if MedGemma access issues")
+    
+    # Test MedGemma access before starting (CRITICAL ADDITION!)
+    print("TESTING MEDGEMMA ACCESS...")
+    medgemma_success, medgemma_status = verify_medgemma_setup()
+    
+    if medgemma_success:
+        print("READY: Both Gemma3 and MedGemma encoders available")
+        encoder_info = "Full comparison: Gemma3 vs MedGemma"
+    else:
+        print("PARTIAL: Only Gemma3 SigLIP available (MedGemma fallback)")
+        encoder_info = "Single encoder: Gemma3 SigLIP only"
+    
+    print(f"   - Gemma3: Direct SiglipVisionModel loading")
+    print(f"   - MedGemma: AutoModelForImageTextToText + vision extraction + CACHING")
+    print(f"   - Mode: {encoder_info}")
     print("")
     print("HYPERPARAMETER SEARCH SPACE:")
     print("   Batch sizes: [4, 8, 16, 32, 48, 64]")
@@ -969,8 +1008,8 @@ def main():
     print("   Dropout rates: [0.0, 0.5]")
     print("   Augmentation parameters: Various ranges")
     print("   Scheduler parameters: Various ranges")
-    print("   Early stopping patience: [5, 15]")
-    print("   Max text length: [64, 128, 256]")
+    print("   Early stopping patience: [5, 20]")
+    print("   Max text length: 128 (FIXED)")
     print("=" * 60)
     
     # Create Optuna study
@@ -986,12 +1025,30 @@ def main():
     
     print("Starting hyperparameter optimization...")
     
-    # Start optimization
-    study.optimize(
-        objective, 
-        n_trials=100,  # Adjust based on computational budget
-        timeout=None  # No timeout, will run for specified trials
-    )
+    # CONFIGURABLE: Adjust n_trials based on your computational budget
+    N_TRIALS = 20  # You can change this value!
+    print(f"Number of trials: {N_TRIALS}")
+    print("Modify N_TRIALS in the code based on the computational budget:")
+    print("  - Quick test: 20-30 trials (~1-2 days)")
+    print("  - Standard: 50-100 trials (~2-5 days)") 
+    print("  - Comprehensive: 200+ trials (~1-2 weeks)")
+    print("")
+    
+    # Start optimization with configurable trial count and progress bar
+    with tqdm(total=N_TRIALS, desc="Optimization Progress", unit="trial") as pbar:
+        def callback(study, trial):
+            pbar.update(1)
+            pbar.set_postfix({
+                'Best': f'{study.best_value:.4f}' if study.best_value else 'N/A',
+                'Current': f'{trial.value:.4f}' if trial.value else 'N/A'
+            })
+        
+        study.optimize(
+            objective, 
+            n_trials=N_TRIALS,
+            timeout=None,  # No timeout, will run for specified trials
+            callbacks=[callback]
+        )
     
     # Print results
     print("=" * 60)
