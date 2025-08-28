@@ -193,7 +193,7 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-# files & folders to ignore
+# <Changes: Kavin> Folders to Ignore
 images_subset_rishabh/
 ALL_IMAGES/
 leo_files/
@@ -204,26 +204,13 @@ saved_models/
 inference_jsons/
 models_v2/
 models_v4/
+
+# <Changes: Kavin> Files to Ignore
 *.p
 *.tfrecord
 *.pt
 *zip
+terminal_output.txt
 
 # .venv_amd is a virtual environment created for AMD-SigLIP2 project
 .venv_amd/
-
-# # Image augmentation pipeline (light geometric + photometric tweaks, preserve structure)
-# aug = A.Compose([
-#     A.HorizontalFlip(p=0.5),  # OK if left/right eye is not labeled
-#     A.ShiftScaleRotate(
-#         shift_limit=0.02, 
-#         scale_limit=0.05, 
-#         rotate_limit=5,  # <5° to avoid unrealistic tilt
-#         border_mode=cv2.BORDER_REPLICATE, 
-#         p=0.6
-#     ),
-#     A.RandomBrightnessContrast(0.05, 0.05, p=0.5),
-#     A.GaussNoise(var_limit=(0, 1e-4), p=0.3),  # Fixed: var_limit instead of noise_limit
-#     A.MotionBlur(blur_limit=3, p=0.15),  # mimics slight acquisition blur
-#     ToTensorV2()
-# ])

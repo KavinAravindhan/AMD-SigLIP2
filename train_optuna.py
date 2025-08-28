@@ -21,7 +21,10 @@ import pickle
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-TFRECORD_PATH = "/Users/kavin/Columbia/Labs/Kaveri Lab/AMD-SigLIP2/VQA_v2.tfrecord"
+# nohup python train_optuna.py > /home/kavin/AMD-SigLIP2/terminal_output.txt 2>&1 &
+
+# TFRECORD_PATH = "/Users/kavin/Columbia/Labs/Kaveri Lab/AMD-SigLIP2/VQA_v2.tfrecord"
+TFRECORD_PATH = "/media/16TB_Storage/kavin/amd_siglip/data_tfrecords/VQA_v4.tfrecord"
 
 EPOCHS = 50
 MAX_TEXT_LEN = 128
@@ -32,7 +35,8 @@ IMAGE_WIDTH = 1055
 IMAGE_CHANNELS = 3
 
 # Model save directory
-MODEL_SAVE_DIR = "/Users/kavin/Columbia/Labs/Kaveri Lab/AMD-SigLIP2/saved_models"
+# MODEL_SAVE_DIR = "/Users/kavin/Columbia/Labs/Kaveri Lab/AMD-SigLIP2/saved_models"
+MODEL_SAVE_DIR = "/media/16TB_Storage/kavin/amd_siglip/saved_models"
 
 # Device setup
 if torch.backends.mps.is_available():
@@ -63,7 +67,8 @@ description = {
 }
 
 # Caption settings
-NUM_CAPTIONS_PER_IMAGE = 8   # 8 VQA explanations per image
+# NUM_CAPTIONS_PER_IMAGE = 8   # 8 VQA explanations per image
+NUM_CAPTIONS_PER_IMAGE = 1   # 1 VQA explanations per image
 CAPTION_MAX_LENGTH = 128     # T5 tokenizer max length
 
 # Global cache for MedGemma vision encoder to avoid reloading
@@ -196,11 +201,17 @@ def collate_fn(batch, aug_pipeline):
             attn_mask_shape = tuple(item["attn_mask_shape"])
             
             # Reconstruct original multi-dimensional arrays
-            input_ids_array = input_ids_flat.reshape(input_ids_shape)  # Should be (8, 128)
-            attn_mask_array = attn_mask_flat.reshape(attn_mask_shape)  # Should be (8, 128)
+            input_ids_array = input_ids_flat.reshape(input_ids_shape)  # Should be (8, 128) or (1, 128)
+            attn_mask_array = attn_mask_flat.reshape(attn_mask_shape)  # Should be (8, 128) or (1, 128)
             
-            # RANDOM CAPTION SELECTION: Choose 1 of 8 captions randomly
-            caption_idx = random.randint(0, NUM_CAPTIONS_PER_IMAGE - 1)
+            # # RANDOM CAPTION SELECTION: Choose 1 of 8 captions randomly
+            # caption_idx = random.randint(0, NUM_CAPTIONS_PER_IMAGE - 1)
+            # selected_input_ids = input_ids_array[caption_idx]     # Shape: (128,)
+            # selected_attn_mask = attn_mask_array[caption_idx]     # Shape: (128,)
+
+            # DYNAMIC CAPTION SELECTION: Handle actual number of captions
+            actual_num_captions = input_ids_array.shape[0]  # Get actual number of captions
+            caption_idx = random.randint(0, actual_num_captions - 1)
             selected_input_ids = input_ids_array[caption_idx]     # Shape: (128,)
             selected_attn_mask = attn_mask_array[caption_idx]     # Shape: (128,)
             
@@ -538,7 +549,7 @@ def objective(trial):
     print(f"Starting trial {trial.number}")
     
     # Hyperparameter suggestions
-    batch_size = trial.suggest_categorical("batch_size", [4, 8, 16, 32, 48, 64])
+    batch_size = trial.suggest_categorical("batch_size", [4, 8, 16, 20, 30, 32, 48, 64])
     learning_rate = trial.suggest_categorical("learning_rate", [1e-3, 1e-4, 1e-5])
     alpha = trial.suggest_float("alpha", 0.1, 0.9)
     
@@ -1026,7 +1037,7 @@ def main():
     print("Starting hyperparameter optimization...")
     
     # CONFIGURABLE: Adjust n_trials based on your computational budget
-    N_TRIALS = 20  # You can change this value!
+    N_TRIALS = 500  # You can change this value!
     print(f"Number of trials: {N_TRIALS}")
     print("Modify N_TRIALS in the code based on the computational budget:")
     print("  - Quick test: 20-30 trials (~1-2 days)")
