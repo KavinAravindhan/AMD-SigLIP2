@@ -21,7 +21,7 @@ import pickle
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-# nohup python train_optuna.py > /home/kavin/AMD-SigLIP2/terminal_output.txt 2>&1 &
+# nohup python train_optuna.py > /home/kavin/AMD-SigLIP2/terminal_output_train_optuna.txt 2>&1 &
 
 # TFRECORD_PATH = "/Users/kavin/Columbia/Labs/Kaveri Lab/AMD-SigLIP2/VQA_v2.tfrecord"
 TFRECORD_PATH = "/media/16TB_Storage/kavin/amd_siglip/data_tfrecords/VQA_v4.tfrecord"

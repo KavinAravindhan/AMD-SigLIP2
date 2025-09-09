@@ -204,13 +204,13 @@ saved_models/
 inference_jsons/
 models_v2/
 models_v4/
+terminal_output_nohup/
 
 # <Changes: Kavin> Files to Ignore
 *.p
 *.tfrecord
 *.pt
 *zip
-terminal_output.txt
 
 # .venv_amd is a virtual environment created for AMD-SigLIP2 project
 .venv_amd/
